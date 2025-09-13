@@ -1,10 +1,10 @@
-# main.py (Final Production version with debugging for bad cookie)
+# main.py (Master Diagnostic Version)
 import os
 import logging
-from fastapi import FastAPI, HTTPException, Security, Header
+from fastapi import FastAPI, HTTPException, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from terabox_handler import get_files_from_link
 
@@ -41,12 +41,8 @@ async def get_link_endpoint(request: LinkRequest):
     file_data, debug_info = await get_files_from_link(request.url, TERABOX_COOKIE)
 
     if file_data is None:
-        # Create a detailed error message
-        error_detail = (
-            "Failed to retrieve file data. This is almost always due to an expired or invalid TERABOX_COOKIE. "
-            f"Debug Info: {debug_info[:200]}..." # Show a snippet of the debug info
-        )
-        raise HTTPException(status_code=404, detail=error_detail)
+        # Return the entire debug dictionary as the error detail
+        raise HTTPException(status_code=404, detail=debug_info)
     
     return file_data
 
