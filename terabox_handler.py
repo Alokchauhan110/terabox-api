@@ -1,4 +1,4 @@
-# terabox_handler.py (Master Diagnostic Version)
+# terabox_handler.py (Final Production Version with Link Resolution)
 import httpx
 import re
 import json
@@ -9,63 +9,75 @@ logger = logging.getLogger(__name__)
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept': '*/*',
     'Accept-Language': 'en-US,en;q=0.9',
+    'Connection': 'keep-alive',
     'Referer': 'https://www.terabox.com/'
 }
 
-async def get_files_from_link(terabox_url: str, cookies: str) -> tuple[list | None, dict]:
-    """
-    Tries to get the link via the API.
-    On failure, returns a dictionary with detailed debug information.
-    """
-    debug_info = {}
+async def get_files_from_link(terabox_url: str, cookies: str) -> list | None:
     try:
         cookie_dict = {item.split('=')[0].strip(): '='.join(item.split('=')[1:]) for item in cookies.split('; ')}
         
         async with httpx.AsyncClient(headers=HEADERS, cookies=cookie_dict, follow_redirects=True, timeout=30.0) as client:
+            
+            # Step 1: Get the initial page to find the 'surl'
             initial_response = await client.get(terabox_url)
             initial_response.raise_for_status()
             
             final_url = str(initial_response.url)
-            debug_info['final_redirected_url'] = final_url
-            
             surl = parse_qs(urlparse(final_url).query).get('surl', [None])[0]
-            debug_info['extracted_surl'] = surl
 
             if not surl:
-                debug_info['error'] = "Could not find 'surl' in the final URL."
-                return None, debug_info
+                logger.error("Could not find 'surl' in the final URL.")
+                return None
 
+            # Step 2: Call the API with the 'surl' to get the initial file list
             api_url = f"https://www.terabox.com/api/shorturl?surl={surl}"
-            debug_info['constructed_api_url'] = api_url
-            
             api_response = await client.get(api_url)
             api_response.raise_for_status()
             
             try:
                 api_data = api_response.json()
             except json.JSONDecodeError:
-                debug_info['error'] = "Failed to decode JSON. Terabox API did not return valid JSON. This is the classic sign of an invalid/expired cookie."
-                debug_info['raw_response_from_api'] = api_response.text[:500] + "..." # Get a snippet of the HTML
-                return None, debug_info
+                logger.error("Failed to decode JSON. The response is likely an HTML page (bad cookie).")
+                return None
 
             if api_data.get("errno") != 0 or not api_data.get("list"):
-                debug_info['error'] = "Terabox API returned a valid JSON but with an error."
-                debug_info['api_json_response'] = api_data
-                return None, debug_info
+                logger.error(f"Terabox API returned an error or empty list: {api_data}")
+                return None
             
-            # If we reach here, it's a success!
-            formatted_files = [{
-                "file_name": item.get("server_filename"),
-                "direct_link": item.get("dlink"),
-                "size_bytes": int(item.get("size", 0)),
-                "thumbnail": item.get("thumbs", {}).get("url3")
-            } for item in api_data["list"]]
+            file_list_data = api_data["list"]
             
-            return formatted_files, {"status": "Success"}
+            # Step 3: Process each file to resolve the final download link
+            formatted_files = []
+            for item in file_list_data:
+                initial_dlink = item.get("dlink")
+                if not initial_dlink:
+                    continue
+
+                # NEW LOGIC: Resolve the dlink to get the final, high-speed URL
+                try:
+                    # Make a HEAD request to the initial dlink to find the redirect location
+                    head_response = await client.head(initial_dlink, follow_redirects=False)
+                    if 300 <= head_response.status_code < 400:
+                        final_download_url = head_response.headers.get('location')
+                    else:
+                        final_download_url = initial_dlink # Fallback if no redirect
+                except Exception as e:
+                    logger.warning(f"Could not resolve dlink, falling back. Error: {e}")
+                    final_download_url = initial_dlink
+
+                formatted_files.append({
+                    "file_name": item.get("server_filename"),
+                    "direct_link": final_download_url, # We now use the fast link as the main link
+                    "size_bytes": int(item.get("size", 0)),
+                    "thumbnail": item.get("thumbs", {}).get("url3")
+                })
+            
+            logger.info(f"SUCCESS! Extracted and resolved {len(formatted_files)} file(s).")
+            return formatted_files
 
     except Exception as e:
-        debug_info['error'] = f"An unexpected exception occurred: {str(e)}"
         logger.error(f"An error occurred in get_files_from_link: {e}", exc_info=True)
-        return None, debug_info
+        return None
