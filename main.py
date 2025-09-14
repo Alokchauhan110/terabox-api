@@ -1,10 +1,10 @@
-# main.py (Master Diagnostic Version)
+# main.py (Final Production Version)
 import os
 import logging
-from fastapi import FastAPI, HTTPException, Security
+from fastapi import FastAPI, HTTPException, Security, Header
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 from terabox_handler import get_files_from_link
 
@@ -27,7 +27,7 @@ class LinkRequest(BaseModel):
 
 class FileResponse(BaseModel):
     file_name: str
-    direct_link: str
+    direct_link: str # This will now contain the final, high-speed link
     size_bytes: int
     thumbnail: Optional[str] = None
     
@@ -38,11 +38,11 @@ async def get_link_endpoint(request: LinkRequest):
         raise HTTPException(status_code=500, detail="Server is not configured with TERABOX_COOKIE")
 
     logging.info(f"Processing URL: {request.url}")
-    file_data, debug_info = await get_files_from_link(request.url, TERABOX_COOKIE)
+    file_data = await get_files_from_link(request.url, TERABOX_COOKIE)
 
     if file_data is None:
-        # Return the entire debug dictionary as the error detail
-        raise HTTPException(status_code=404, detail=debug_info)
+        error_detail = "Failed to retrieve file data. The link may be invalid/private, or the TERABOX_COOKIE has expired. Please update the cookie."
+        raise HTTPException(status_code=404, detail=error_detail)
     
     return file_data
 
